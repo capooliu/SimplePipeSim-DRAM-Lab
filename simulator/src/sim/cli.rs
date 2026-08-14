@@ -67,12 +67,56 @@ pub struct Args {
     #[arg(long, value_enum, default_value_t = BackingMemoryArg::SimpleMem)]
     pub memory: BackingMemoryArg,
 
+    // -------- Single-bank DRAM timing --------
+    /// DRAM row-to-column delay in cycles. Only used with `--memory dram`.
+    #[arg(long, default_value_t = 4, value_parser = parse_positive_usize)]
+    pub dram_trcd: usize,
+
+    /// DRAM CAS latency in cycles. Only used with `--memory dram`.
+    #[arg(long, default_value_t = 4, value_parser = parse_positive_usize)]
+    pub dram_tcl: usize,
+
+    /// DRAM precharge time in cycles. Only used with `--memory dram`.
+    #[arg(long, default_value_t = 4, value_parser = parse_positive_usize)]
+    pub dram_trp: usize,
+
     /// Write per-cache statistics to this JSON file.
     /// Schema: { "pipeline": StatisticInfo, "l1i": StatisticInfo,
     /// "l1d": StatisticInfo, "l2": StatisticInfo, "backing_memory": ...,
     /// "final_registers": [...], "config": { mirror of CLI args } }.
     #[arg(long)]
     pub stats_out: Option<PathBuf>,
+}
+
+fn parse_positive_usize(value: &str) -> Result<usize, String> {
+    let parsed = value
+        .parse::<usize>()
+        .map_err(|_| format!("expected a positive integer, got {value:?}"))?;
+    if parsed == 0 {
+        Err("DRAM timing must be at least 1 cycle".to_string())
+    } else {
+        Ok(parsed)
+    }
+}
+
+impl Args {
+    /// Build the backing-memory configuration selected by the CLI.
+    /// DRAM timing flags are intentionally ignored for `simple-mem`.
+    pub fn backing_memory_kind(&self) -> crate::sim::runner::BackingMemoryKind {
+        use crate::hardware::mem::simple_dram::DramTiming;
+        use crate::sim::runner::BackingMemoryKind;
+
+        match self.memory {
+            BackingMemoryArg::SimpleMem => BackingMemoryKind::SimpleMem,
+            BackingMemoryArg::Dram => BackingMemoryKind::SimpleDram {
+                timing: DramTiming {
+                    t_rcd: self.dram_trcd,
+                    t_cl: self.dram_tcl,
+                    t_rp: self.dram_trp,
+                },
+            },
+        }
+    }
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
@@ -173,19 +217,69 @@ impl From<BranchPredictorArg> for crate::sim::runner::BranchPredictorKind {
 pub enum BackingMemoryArg {
     /// Flat-latency main memory.
     SimpleMem,
-    /// Single-bank row-buffer-aware DRAM with educational timing defaults.
+    /// Single-bank row-buffer-aware DRAM configured by the `--dram-*` flags.
     Dram,
 }
 
-impl From<BackingMemoryArg> for crate::sim::runner::BackingMemoryKind {
-    fn from(a: BackingMemoryArg) -> Self {
-        use crate::hardware::mem::simple_dram::DramTiming;
-        use crate::sim::runner::BackingMemoryKind;
-        match a {
-            BackingMemoryArg::SimpleMem => BackingMemoryKind::SimpleMem,
-            BackingMemoryArg::Dram => BackingMemoryKind::SimpleDram {
-                timing: DramTiming::educational_default(),
-            },
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sim::runner::BackingMemoryKind;
+
+    #[test]
+    fn dram_timing_flags_reach_runner_config() {
+        let args = Args::try_parse_from([
+            "simulator",
+            "--prog",
+            "qsort",
+            "--memory",
+            "dram",
+            "--dram-trcd",
+            "12",
+            "--dram-tcl",
+            "7",
+            "--dram-trp",
+            "9",
+        ])
+        .expect("parse CLI arguments");
+
+        match args.backing_memory_kind() {
+            BackingMemoryKind::SimpleDram { timing } => {
+                assert_eq!(timing.t_rcd, 12);
+                assert_eq!(timing.t_cl, 7);
+                assert_eq!(timing.t_rp, 9);
+            }
+            BackingMemoryKind::SimpleMem => panic!("expected DRAM backing memory"),
         }
+    }
+
+    #[test]
+    fn dram_timing_defaults_match_educational_model() {
+        let args = Args::try_parse_from(["simulator", "--prog", "qsort", "--memory", "dram"])
+            .expect("parse CLI arguments");
+
+        match args.backing_memory_kind() {
+            BackingMemoryKind::SimpleDram { timing } => {
+                assert_eq!(timing.t_rcd, 4);
+                assert_eq!(timing.t_cl, 4);
+                assert_eq!(timing.t_rp, 4);
+            }
+            BackingMemoryKind::SimpleMem => panic!("expected DRAM backing memory"),
+        }
+    }
+
+    #[test]
+    fn zero_dram_timing_is_rejected_by_cli() {
+        let parsed = Args::try_parse_from([
+            "simulator",
+            "--prog",
+            "qsort",
+            "--memory",
+            "dram",
+            "--dram-trcd",
+            "0",
+        ]);
+
+        assert!(parsed.is_err());
     }
 }

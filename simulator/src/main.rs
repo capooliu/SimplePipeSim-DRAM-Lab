@@ -31,7 +31,7 @@ fn simulation_config(args: &Args) -> SimulationConfig {
         replacement_policy: args.rp.into(),
         write_policy: args.wp.into(),
         prefetcher_kind: args.prefetcher.into(),
-        backing_memory: args.memory.into(),
+        backing_memory: args.backing_memory_kind(),
         branch_predictor: args.bp.into(),
     }
 }

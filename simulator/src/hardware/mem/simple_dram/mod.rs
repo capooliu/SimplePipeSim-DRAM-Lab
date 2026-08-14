@@ -75,6 +75,9 @@ pub struct SimpleDram {
     /// for this request. Used to suppress a spurious hit-count bump
     /// when the request's own CAS later sees `Active(req_row)`.
     pending_req_required_activate: bool,
+    /// Per-request flag: set when the request first finds a different
+    /// row open and therefore has to issue PRE before ACT.
+    pending_req_required_precharge: bool,
 
     /// Number of requests served entirely from an already-open row.
     /// Bumped at CAS-issue, on demand requests only.
@@ -82,6 +85,13 @@ pub struct SimpleDram {
     /// Number of requests that required an ACT (cold open or
     /// post-precharge). Bumped at ACT-issue.
     pub row_buffer_miss_cnt: usize,
+    /// Number of requests that opened an idle bank without first
+    /// precharging a different row.
+    pub cold_open_cnt: usize,
+    /// Number of requests that had to precharge a different open row.
+    pub row_conflict_cnt: usize,
+    /// Sum of the modeled DRAM service latency of every request.
+    pub total_access_time_cycles: usize,
 }
 
 impl SimpleDram {
@@ -97,8 +107,12 @@ impl SimpleDram {
             bank: Bank::new(),
             pending_req: None,
             pending_req_required_activate: false,
+            pending_req_required_precharge: false,
             row_buffer_hit_cnt: 0,
             row_buffer_miss_cnt: 0,
+            cold_open_cnt: 0,
+            row_conflict_cnt: 0,
+            total_access_time_cycles: 0,
         }
     }
 
@@ -120,6 +134,22 @@ impl SimpleDram {
         self.timing
     }
 
+    /// Total number of completed or in-flight DRAM requests that have
+    /// already been classified as a hit, cold open, or row conflict.
+    pub fn dram_access_cnt(&self) -> usize {
+        self.row_buffer_hit_cnt + self.row_buffer_miss_cnt
+    }
+
+    /// Mean modeled DRAM service latency per classified request.
+    pub fn average_access_time_cycles(&self) -> f64 {
+        let access_cnt = self.dram_access_cnt();
+        if access_cnt == 0 {
+            0.0
+        } else {
+            self.total_access_time_cycles as f64 / access_cnt as f64
+        }
+    }
+
     fn addr_to_row(&self, addr: u32) -> u32 {
         addr / (self.row_size_bytes as u32)
     }
@@ -133,6 +163,7 @@ impl SimpleDram {
         let len = req.get_len();
         req.complete_load_from_slice(&self.data[addr..(addr + len)]);
         self.pending_req_required_activate = false;
+        self.pending_req_required_precharge = false;
     }
 
     fn complete_pending_write(&mut self) {
@@ -145,6 +176,7 @@ impl SimpleDram {
         self.data[addr..(addr + len)].clone_from_slice(req.store_data());
         req.complete_store();
         self.pending_req_required_activate = false;
+        self.pending_req_required_precharge = false;
     }
 }
 
@@ -166,6 +198,7 @@ impl AbstractMemoryInterface for SimpleDram {
         }
         self.pending_req = Some(req.clone());
         self.pending_req_required_activate = false;
+        self.pending_req_required_precharge = false;
         Ok(())
     }
 }
@@ -189,6 +222,10 @@ impl Clocked for SimpleDram {
                     // request paid the cost of an ACT, so it counts
                     // as a row-buffer miss.
                     self.row_buffer_miss_cnt += 1;
+                    if !self.pending_req_required_precharge {
+                        self.cold_open_cnt += 1;
+                        self.total_access_time_cycles += self.timing.t_rcd + self.timing.t_cl;
+                    }
                     self.pending_req_required_activate = true;
                     self.bank.issue_activate(req_row, self.timing.t_rcd);
                 }
@@ -200,6 +237,7 @@ impl Clocked for SimpleDram {
                     // already counted at ACT-issue.
                     if !self.pending_req_required_activate {
                         self.row_buffer_hit_cnt += 1;
+                        self.total_access_time_cycles += self.timing.t_cl;
                     }
                     if req_is_store {
                         self.bank.issue_write(req_row, self.timing.t_cl);
@@ -211,6 +249,10 @@ impl Clocked for SimpleDram {
                     // Wrong row open: precharge, then the next pass
                     // through this `match` will see Idle and ACT the
                     // request's row.
+                    self.row_conflict_cnt += 1;
+                    self.total_access_time_cycles +=
+                        self.timing.t_rp + self.timing.t_rcd + self.timing.t_cl;
+                    self.pending_req_required_precharge = true;
                     self.bank.issue_precharge(self.timing.t_rp);
                 }
                 BankState::Activating { .. }
@@ -284,6 +326,11 @@ mod unit_tests {
         assert_eq!(cycles, t.t_rcd + t.t_cl);
         assert_eq!(d.row_buffer_miss_cnt, 1);
         assert_eq!(d.row_buffer_hit_cnt, 0);
+        assert_eq!(d.cold_open_cnt, 1);
+        assert_eq!(d.row_conflict_cnt, 0);
+        assert_eq!(d.total_access_time_cycles, cycles);
+        assert_eq!(d.dram_access_cnt(), 1);
+        assert_eq!(d.average_access_time_cycles(), cycles as f64);
     }
 
     #[test]
@@ -302,6 +349,9 @@ mod unit_tests {
         );
         assert_eq!(d.row_buffer_hit_cnt, 1);
         assert_eq!(d.row_buffer_miss_cnt, 1);
+        assert_eq!(d.cold_open_cnt, 1);
+        assert_eq!(d.row_conflict_cnt, 0);
+        assert_eq!(d.total_access_time_cycles, t.t_rcd + 2 * t.t_cl);
     }
 
     #[test]
@@ -316,6 +366,12 @@ mod unit_tests {
         assert_eq!(cycles, t.t_rp + t.t_rcd + t.t_cl);
         assert_eq!(d.row_buffer_miss_cnt, 2);
         assert_eq!(d.row_buffer_hit_cnt, 0);
+        assert_eq!(d.cold_open_cnt, 1);
+        assert_eq!(d.row_conflict_cnt, 1);
+        assert_eq!(
+            d.total_access_time_cycles,
+            (t.t_rcd + t.t_cl) + (t.t_rp + t.t_rcd + t.t_cl)
+        );
     }
 
     #[test]

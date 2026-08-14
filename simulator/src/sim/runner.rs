@@ -165,8 +165,13 @@ impl Default for SimulationConfig {
 pub enum BackingMemoryReport {
     SimpleMem,
     SimpleDram {
+        dram_access_cnt: usize,
+        cold_open_cnt: usize,
         row_buffer_hit_cnt: usize,
         row_buffer_miss_cnt: usize,
+        row_conflict_cnt: usize,
+        total_access_time_cycles: usize,
+        average_access_time_cycles: f64,
     },
 }
 
@@ -256,8 +261,13 @@ where
             SimpleDram::new(prog_body, timing),
             config,
             |dram| BackingMemoryReport::SimpleDram {
+                dram_access_cnt: dram.dram_access_cnt(),
+                cold_open_cnt: dram.cold_open_cnt,
                 row_buffer_hit_cnt: dram.row_buffer_hit_cnt,
                 row_buffer_miss_cnt: dram.row_buffer_miss_cnt,
+                row_conflict_cnt: dram.row_conflict_cnt,
+                total_access_time_cycles: dram.total_access_time_cycles,
+                average_access_time_cycles: dram.average_access_time_cycles(),
             },
         ),
     }

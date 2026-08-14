@@ -33,7 +33,7 @@ run_dram_case() {
             --stats-out "${output_path}"
     )
 
-    grep -E 'total_ticked_cycle|row_buffer_hit_cnt|row_buffer_miss_cnt' "${output_path}"
+    grep -E 'total_ticked_cycle|dram_access_cnt|cold_open_cnt|row_buffer_hit_cnt|row_buffer_miss_cnt|row_conflict_cnt|total_access_time_cycles|average_access_time_cycles' "${output_path}"
 }
 
 run_qsort() {

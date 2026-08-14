@@ -45,8 +45,13 @@
   },
   "backing_memory": {
     "kind": "simple_dram",
+    "dram_access_cnt": 90,
+    "cold_open_cnt": 1,
     "row_buffer_hit_cnt": 41,
-    "row_buffer_miss_cnt": 49
+    "row_buffer_miss_cnt": 49,
+    "row_conflict_cnt": 48,
+    "total_access_time_cycles": 748,
+    "average_access_time_cycles": 8.311111111111112
   },
   "final_registers": [
     0,

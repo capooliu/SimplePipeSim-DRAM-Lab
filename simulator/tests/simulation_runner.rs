@@ -49,11 +49,20 @@ fn runner_composes_dram_and_predictor_adapters() {
 
     match report.backing_memory {
         BackingMemoryReport::SimpleDram {
+            dram_access_cnt,
+            cold_open_cnt,
             row_buffer_hit_cnt,
             row_buffer_miss_cnt,
+            row_conflict_cnt,
+            total_access_time_cycles,
+            average_access_time_cycles,
         } => {
             assert_eq!(row_buffer_hit_cnt, 0);
             assert!(row_buffer_miss_cnt > 0);
+            assert_eq!(dram_access_cnt, row_buffer_hit_cnt + row_buffer_miss_cnt);
+            assert_eq!(row_buffer_miss_cnt, cold_open_cnt + row_conflict_cnt);
+            assert!(total_access_time_cycles > 0);
+            assert!(average_access_time_cycles > 0.0);
         }
         BackingMemoryReport::SimpleMem => panic!("expected DRAM report"),
     }
